@@ -4,12 +4,16 @@ import java.lang.{Byte => JByte}
 
 import cats.Eq
 import cats.instances.byte._
+import cats.instances.option._
 import cats.syntax.eq._
+import cats.syntax.traverse._
 import com.typesafe.scalalogging.Logger
+import coop.rchain.catscontrib.seq._
 import coop.rchain.shared.AttemptOps._
 import scodec.Codec
 
 import scala.annotation.tailrec
+import scala.collection.immutable
 
 package object history {
 
@@ -17,24 +21,17 @@ package object history {
 
   def initialize[T, K, V](store: ITrieStore[T, K, V])(implicit
                                                       codecK: Codec[K],
-                                                      codecV: Codec[V]): Unit = {
-    val root     = Trie.create[K, V]()
-    val rootHash = Trie.hash(root)
+                                                      codecV: Codec[V]): Unit =
     store.withTxn(store.createTxnWrite()) { txn =>
-      store.put(txn, rootHash, root)
-      store.putRoot(txn, rootHash)
-    }
-    logger.debug(s"workingRootHash: $rootHash")
-  }
-
-  def getRoot[T, K, V](store: ITrieStore[T, K, V]): Option[Blake2b256Hash] =
-    store.withTxn(store.createTxnRead())(txn => store.getRoot(txn))
-
-  def setRoot[T, K, V](store: ITrieStore[T, K, V], hash: Blake2b256Hash): Unit =
-    store.withTxn(store.createTxnWrite()) { txn =>
-      store.get(txn, hash) match {
-        case Some(Node(_)) => store.putRoot(txn, hash)
-        case _             => throw new Exception(s"no node at $hash")
+      store.getRoot(txn) match {
+        case None =>
+          val root     = Trie.create[K, V]()
+          val rootHash = Trie.hash(root)
+          store.put(txn, rootHash, root)
+          store.putRoot(txn, rootHash)
+          logger.debug(s"workingRootHash: $rootHash")
+        case Some(_) =>
+          ()
       }
     }
 
@@ -69,6 +66,10 @@ package object history {
       } yield res
     }
   }
+
+  def lookup[T, K, V](store: ITrieStore[T, K, V], keys: immutable.Seq[K])(
+      implicit codecK: Codec[K]): Option[immutable.Seq[V]] =
+    keys.traverse[Option, V]((k: K) => lookup(store, k))
 
   @tailrec
   private[this] def getParents[T, K, V](
